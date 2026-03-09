@@ -51,7 +51,7 @@ class ValueMultiFactorStrategy(BaseStrategy):
     def __init__(self):
         super().__init__(
             name="稳健价值多因子策略",
-            description="基于价值投资理念，结合质量因子和动量因子，筛选具备安全边际的优质股票"
+            description="基于价值投资理念，结合质量因子和动量因子，筛选优质股票"
         )
         
         self.params = {
@@ -254,7 +254,7 @@ class MomentumRotationStrategy(BaseStrategy):
     def __init__(self):
         super().__init__(
             name="动量驱动的行业轮动策略",
-            description="利用A股市场的行业轮动特征，基于动量信号进行行业配置，捕捉结构性机会"
+            description="利用行业轮动特征，基于动量信号进行行业配置，捕捉机会"
         )
         
         self.params = {
@@ -403,7 +403,7 @@ class LowVolatilityDefensiveStrategy(BaseStrategy):
     def __init__(self):
         super().__init__(
             name="低波动防御性策略",
-            description="在市场波动加剧时，选择低波动、高分红、稳定增长的防御性股票，实现稳健收益"
+            description="选择低波动、高分红、稳定增长的防御性股票，稳健收益"
         )
         
         self.params = {

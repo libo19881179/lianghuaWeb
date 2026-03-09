@@ -237,20 +237,68 @@ class DataSourceManager:
             logger.error(f"Baostock 获取数据失败：{e}")
             return None
     
-    @retry_on_network_error(max_retries=5)
-    def get_all_a_stock_codes(self) -> pd.DataFrame:
-        """获取所有 A 股代码列表（排除指数、基金、债券等）"""
+    def is_trading_day(self, date: str) -> bool:
+        """检查指定日期是否为交易日
+        
+        Args:
+            date: 日期字符串，格式为 'YYYY-MM-DD'
+            
+        Returns:
+            bool: 如果是交易日返回 True，否则返回 False
+        """
+        # 首先检查是否为周末
+        try:
+            date_obj = datetime.strptime(date, '%Y-%m-%d')
+            # 周六或周日
+            if date_obj.weekday() >= 5:
+                logger.info(f"{date} 是周末，不是交易日")
+                return False
+        except Exception as e:
+            logger.error(f"日期格式错误：{e}")
+            return False
+        
+        if not self.bs_login_status:
+            logger.warning("Baostock 未登录，无法检查交易日")
+            return False
+        
+        try:
+            # 尝试获取当天的股票列表，如果能获取到数据且有股票，则认为是交易日
+            rs = bs.query_all_stock(day=date)
+            if rs and rs.error_code == '0':
+                # 检查是否有数据
+                has_data = False
+                while rs.next():
+                    has_data = True
+                    break
+                logger.info(f"{date} {'是' if has_data else '不是'} 交易日")
+                return has_data
+            logger.info(f"{date} 不是交易日（Baostock 无数据）")
+            return False
+        except Exception as e:
+            logger.error(f"检查交易日失败：{e}")
+            return False
+    
+    def get_all_a_stock_codes(self, date: str = None) -> pd.DataFrame:
+        """获取所有 A 股代码列表（排除指数、基金、债券等）
+        
+        Args:
+            date: 日期字符串，格式为 'YYYY-MM-DD'，如果不提供则自动查找最近的交易日
+            
+        Returns:
+            包含 A 股代码和名称的 DataFrame
+        """
         # 使用 Baostock
         if self.bs_login_status:
             logger.info("  从 Baostock 获取 A 股列表...")
             
             # 尝试获取最近的有数据的日期
-            current_date = datetime.now().strftime('%Y-%m-%d')
+            current_date = date if date else datetime.now().strftime('%Y-%m-%d')
             max_attempts = 30  # 最多尝试30天
             data_list = []
             rs = None
             
-            for attempt in range(max_attempts):
+            # 如果提供了日期，直接使用该日期
+            if date:
                 try:
                     rs = bs.query_all_stock(day=current_date)
                     if rs and rs.error_code == '0':
@@ -260,14 +308,29 @@ class DataSourceManager:
                             temp_data.append(rs.get_row_data())
                         if temp_data:
                             data_list = temp_data
-                            logger.info(f"  使用日期：{current_date}")
-                            break
+                            logger.info(f"  使用指定日期：{current_date}")
                 except Exception as e:
                     logger.error(f"  日期 {current_date} 获取失败：{e}")
-                
-                # 如果当前日期没有数据，尝试前一天
-                current_date = (datetime.strptime(current_date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
-                logger.info(f"  尝试前一天日期：{current_date}")
+            else:
+                # 没有提供日期，自动查找最近的交易日
+                for attempt in range(max_attempts):
+                    try:
+                        rs = bs.query_all_stock(day=current_date)
+                        if rs and rs.error_code == '0':
+                            # 检查是否有数据
+                            temp_data = []
+                            while rs.next():
+                                temp_data.append(rs.get_row_data())
+                            if temp_data:
+                                data_list = temp_data
+                                logger.info(f"  使用日期：{current_date}")
+                                break
+                    except Exception as e:
+                        logger.error(f"  日期 {current_date} 获取失败：{e}")
+                    
+                    # 如果当前日期没有数据，尝试前一天
+                    current_date = (datetime.strptime(current_date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+                    logger.info(f"  尝试前一天日期：{current_date}")
             
             try:
                 # 如果没有获取到数据，再次尝试
@@ -461,7 +524,14 @@ class DataSourceManager:
     def logout(self):
         """登出 Baostock"""
         if self.bs_login_status:
-            bs.logout()
+            try:
+                bs.logout()
+                logger.info("✓ Baostock 登出成功")
+            except Exception as e:
+                logger.error(f"✗ Baostock 登出失败：{e}")
+            finally:
+                # 无论登出成功与否，都将登录状态设置为 False
+                self.bs_login_status = False
     
     @retry_on_network_error(max_retries=3)
     def get_stock_info(self, stock_code: str) -> Optional[Dict]:

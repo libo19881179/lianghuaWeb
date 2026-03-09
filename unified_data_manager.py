@@ -118,6 +118,26 @@ class UnifiedDataManager:
         else:
             return self.old_manager.get_stock_date_range(stock_code)
     
+    def get_index_date_range(self, index_code: str) -> Tuple[Optional[str], Optional[str]]:
+        """获取指数在缓存中的日期范围"""
+        if self.use_new_storage:
+            meta = self.new_storage.get_stock_info(index_code)
+            if meta and 'index' in meta:
+                min_date = meta['index'].get('min_date')
+                max_date = meta['index'].get('max_date')
+                
+                # 格式化为纯日期（去除时间部分）
+                if min_date:
+                    min_date = str(min_date).split(' ')[0]
+                if max_date:
+                    max_date = str(max_date).split(' ')[0]
+                
+                return (min_date, max_date)
+            return None, None
+        else:
+            # 旧存储不支持指数数据
+            return None, None
+    
     def get_missing_date_range(
         self,
         stock_code: str,
@@ -303,9 +323,26 @@ class UnifiedDataManager:
         """
         print("\n========== 开始智能刷新全部 A 股数据 ==========")
         
+        # 检查今天是否为交易日
+        today = datetime.now().strftime('%Y-%m-%d')
+        is_today_trading_day = data_source.is_trading_day(today)
+        print(f"[1/5] 检查交易日状态：{today} {'是' if is_today_trading_day else '不是'}交易日")
+        
+        # 确定结束日期：如果今天是交易日则使用今天，否则使用最近的交易日
+        end_date = today
+        if not is_today_trading_day:
+            # 查找最近的交易日
+            from datetime import timedelta
+            for i in range(1, 10):  # 最多向前查找10天
+                check_date = (datetime.strptime(today, '%Y-%m-%d') - timedelta(days=i)).strftime('%Y-%m-%d')
+                if data_source.is_trading_day(check_date):
+                    end_date = check_date
+                    print(f"[提示] 使用最近的交易日 {end_date} 作为结束日期")
+                    break
+        
         # 获取全部 A 股列表（已自动筛选，排除指数）
-        print("[1/5] 获取全部 A 股列表（自动排除指数、基金、债券）...")
-        all_stocks_df = data_source.get_all_a_stock_codes()
+        print("[2/5] 获取全部 A 股列表（自动排除指数、基金、债券）...")
+        all_stocks_df = data_source.get_all_a_stock_codes(end_date)
         
         if all_stocks_df.empty:
             print("[错误] 获取 A 股列表失败")
@@ -322,7 +359,7 @@ class UnifiedDataManager:
                 stock_codes.append(code)
                 stock_names[code] = name
         
-        print(f"[2/5] 获取到 {len(stock_codes)} 只 A 股股票")
+        print(f"[3/5] 获取到 {len(stock_codes)} 只 A 股股票")
         
         # 统计信息
         cached_count = 0
@@ -331,7 +368,7 @@ class UnifiedDataManager:
         failed_count = 0
         
         # 逐个刷新
-        print("[3/5] 开始刷新 A 股数据...")
+        print("[4/5] 开始刷新 A 股数据...")
         
         for i, stock_code in enumerate(stock_codes):
             try:
@@ -341,7 +378,7 @@ class UnifiedDataManager:
                 if cached_min is None:
                     # 缓存中没有，需要获取全部数据
                     print(f"[{i+1}/{len(stock_codes)}] {stock_code} - 从网络获取全部数据")
-                    df = data_source.get_stock_data(stock_code, start_date, datetime.now().strftime('%Y-%m-%d'))
+                    df = data_source.get_stock_data(stock_code, start_date, end_date)
                     if df is not None and not df.empty:
                         stock_name = stock_names.get(stock_code, '')
                         self.save_stock_data(stock_code, df, stock_name=stock_name)
@@ -353,14 +390,15 @@ class UnifiedDataManager:
                     need_start, need_end = self.get_missing_date_range(
                         stock_code,
                         start_date,
-                        datetime.now().strftime('%Y-%m-%d')
+                        end_date
                     )
                     
                     if need_start is None and need_end is None:
                         # 缓存完整
                         cached_count += 1
                     else:
-                        # 增量更新
+                        # 只有在数据确实不完整时才进行更新
+                        # 非交易日时，end_date 已经是最近的交易日，所以如果有缺失数据，说明确实需要更新
                         print(f"[{i+1}/{len(stock_codes)}] {stock_code} - 增量更新：{need_start} ~ {need_end}")
                         df_new = data_source.get_stock_data(stock_code, need_start, need_end)
                         if df_new is not None and not df_new.empty:
@@ -383,16 +421,32 @@ class UnifiedDataManager:
                 failed_count += 1
         
         # 下载沪深 300 指数
-        print(f"\n[4/5] 下载沪深 300 指数（000300.SH）...")
+        print(f"\n[5/5] 下载沪深 300 指数（000300.SH）...")
         try:
-            index_df = data_source.get_index_data('000300.SH', start_date, datetime.now().strftime('%Y-%m-%d'))
-            if index_df is not None and not index_df.empty:
-                self.save_index_data('000300.SH', index_df)
-                print("✓ 沪深 300 指数下载完成")
+            # 只有在指数数据不完整时才下载
+            index_min, index_max = self.get_index_date_range('000300.SH')
+            need_index_update = False
+            
+            if index_min is None:
+                # 指数数据不存在，需要下载
+                need_index_update = True
             else:
-                print("✗ 沪深 300 指数下载失败")
+                # 检查指数数据是否需要更新
+                if end_date > index_max:
+                    # 需要获取 index_max 之后的数据
+                    need_index_update = True
+            
+            if need_index_update:
+                index_df = data_source.get_index_data('000300.SH', start_date, end_date)
+                if index_df is not None and not index_df.empty:
+                    self.save_index_data('000300.SH', index_df)
+                    print("✓ 沪深 300 指数下载完成")
+                else:
+                    print("✗ 沪深 300 指数下载失败")
+            else:
+                print("✓ 沪深 300 指数数据完整，跳过更新")
         except Exception as e:
-            print(f"✗ 沪深 300 指数下载失败：{e}")
+            print(f"[错误] 下载沪深 300 指数失败：{e}")
         
         # 统计结果
         print("\n[5/5] 刷新完成")

@@ -20,6 +20,72 @@ import os
 import json
 
 
+class DataTimestampManager:
+    """数据时间戳管理器"""
+    
+    def __init__(self, timestamp_file: str = "data/last_update_timestamp.json"):
+        self.timestamp_file = Path(timestamp_file)
+        self.timestamp_file.parent.mkdir(parents=True, exist_ok=True)
+        self._timestamp_data = self._load_timestamp()
+    
+    def _load_timestamp(self) -> dict:
+        """加载时间戳数据"""
+        if self.timestamp_file.exists():
+            try:
+                with open(self.timestamp_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
+    
+    def _save_timestamp(self):
+        """保存时间戳数据"""
+        try:
+            with open(self.timestamp_file, 'w', encoding='utf-8') as f:
+                json.dump(self._timestamp_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存时间戳失败：{e}")
+    
+    def get_last_update_date(self) -> str:
+        """获取上次数据更新日期"""
+        return self._timestamp_data.get('last_update_date', '')
+    
+    def set_last_update_date(self, date: str):
+        """设置上次数据更新日期"""
+        self._timestamp_data['last_update_date'] = date
+        self._timestamp_data['last_update_time'] = datetime.now().isoformat()
+        self._save_timestamp()
+    
+    def needs_update(self, latest_trading_day: str) -> bool:
+        """判断是否需要更新数据"""
+        last_update = self.get_last_update_date()
+        if not last_update:
+            return True
+        return last_update < latest_trading_day
+
+
+def get_latest_trading_day_from_baostock(ds: DataSourceManager) -> str:
+    """
+    从 Baostock 获取最新的交易日
+    
+    Args:
+        ds: DataSourceManager 实例
+        
+    Returns:
+        最新交易日日期字符串（YYYY-MM-DD）
+    """
+    from datetime import datetime, timedelta
+    
+    # 从当前日期开始向前查找最近的交易日
+    today = datetime.now()
+    for i in range(10):  # 最多向前查找10天
+        check_date = (today - timedelta(days=i)).strftime('%Y-%m-%d')
+        if ds.is_trading_day(check_date):
+            return check_date
+    
+    return ''
+
+
 # 页面配置（移动端优化）
 st.set_page_config(
     page_title="A 股组合再平衡回测系统",
@@ -34,6 +100,21 @@ st.markdown("""
 /* 隐藏右上角 Streamlit 菜单 */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
+
+/* 策略卡片对齐 */
+div[data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"] {
+    min-height: fit-content;
+}
+
+/* 确保info框高度一致 */
+div[data-testid="stAlert"] {
+    min-height: 80px;
+}
+
+/* 确保checkbox对齐 */
+div[data-testid="stCheckbox"] {
+    margin-top: 10px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -121,7 +202,15 @@ def init_session_state():
         }
         st.session_state.strategy_params = {}
         st.session_state.strategy_results = None
+        
+        # 数据时间戳管理器
+        st.session_state.timestamp_manager = DataTimestampManager()
         st.session_state.saved_strategies = []
+        st.session_state.stop_strategy_selection = False
+        
+        # 股票数据缓存
+        st.session_state.stock_data_cache = {}
+        st.session_state.cache_timestamp = None
 
 
 def render_sidebar():
@@ -132,9 +221,10 @@ def render_sidebar():
         # 页面选择
         st.markdown("### 📑 功能选择")
         page = st.radio(
-            "选择功能页面",
-            ["手动选股回测", "策略选股回测"],
-            index=0
+            "功能选择",
+            ["策略选股回测", "手动选股回测"],
+            index=0,
+            label_visibility="collapsed"
         )
         st.session_state.current_page = page
         
@@ -156,7 +246,7 @@ def render_sidebar():
         )
         
         # 验证 Token 按钮
-        if st.button("验证数据源连接", use_container_width=True):
+        if st.button("验证数据源连接", width='stretch'):
             try:
                 # 在函数内部导入，避免 Streamlit 作用域问题
                 from data_sources import DataSourceManager
@@ -305,7 +395,7 @@ def render_sidebar():
                         # 保存和取消按钮
                         col1, col2 = st.columns(2)
                         with col1:
-                            if st.button("✓ 保存", use_container_width=True, key=f"save_edit_{i}"):
+                            if st.button("✓ 保存", width='stretch', key=f"save_edit_{i}"):
                                 formatted_code = format_stock_code(edit_code)
                                 st.session_state.stocks[i] = {
                                     "code": formatted_code,
@@ -322,7 +412,7 @@ def render_sidebar():
                                 st.success(f"已更新为 {edit_name} ({formatted_code})")
                                 st.rerun()
                         with col2:
-                            if st.button("✗ 取消", use_container_width=True, key=f"cancel_edit_{i}"):
+                            if st.button("✗ 取消", width='stretch', key=f"cancel_edit_{i}"):
                                 st.session_state.show_edit_dialog = False
                                 st.session_state.edit_index = -1
                                 # 清理临时编辑值
@@ -429,7 +519,7 @@ def render_sidebar():
         
         new_weight = st.number_input("权重 (0-1)", min_value=0.0, max_value=1.0, value=0.1, step=0.05, key="new_stock_weight")
         
-        if st.button("添加股票", use_container_width=True):
+        if st.button("添加股票", width='stretch'):
             if new_code and new_name and new_weight > 0:
                 # 格式化股票代码
                 formatted_code = format_stock_code(new_code)
@@ -445,7 +535,7 @@ def render_sidebar():
                 st.rerun()
         
         # 权重归一化按钮
-        if st.button("归一化权重", use_container_width=True, help="将所有权重调整为总和为 1"):
+        if st.button("归一化权重", width='stretch', help="将所有权重调整为总和为 1"):
             total_weight = sum(s['weight'] for s in st.session_state.stocks)
             if total_weight > 0:
                 for stock in st.session_state.stocks:
@@ -463,29 +553,64 @@ def render_sidebar():
       
         if cache_info.get('cache_file_size', 0) > 0:
             st.text(f"缓存大小：{cache_info['cache_file_size']/1024:.1f} KB")
+        
+        # 股票数据缓存管理
+        st.markdown("### 📦 数据缓存管理")
+        
+        # 显示缓存状态
+        if st.session_state.stock_data_cache:
+            cache_size = sum(len(df) for df in st.session_state.stock_data_cache.values())
+            cache_keys = list(st.session_state.stock_data_cache.keys())
+            st.info(f"📊 缓存状态：已缓存 {len(cache_keys)} 个日期范围，共 {cache_size} 条数据")
+            if st.session_state.cache_timestamp:
+                cache_time = datetime.fromisoformat(st.session_state.cache_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                st.text(f"缓存时间：{cache_time}")
+            
+            # 清除缓存按钮
+            if st.button("🗑️ 清除选股数据缓存", width='stretch'):
+                st.session_state.stock_data_cache = {}
+                st.session_state.cache_timestamp = None
+                st.success("✅ 缓存已清除")
+                st.rerun()
+        else:
+            st.info("📊 缓存状态：无缓存数据")
+            st.text("首次选股时会自动缓存数据")
       
         
         # 刷新缓存按钮
         col1, col2 = st.columns([3, 1])
         with col1:
-            if st.button("🔄 智能刷新全部 A 股", use_container_width=True, help="智能更新全部 A 股数据，只获取缺失的股票和最新数据"):
+            if st.button("🔄 智能刷新全部 A 股", width='stretch', help="智能更新全部 A 股数据，只获取缺失的股票和最新数据"):
                 # 智能刷新全部 A 股
                 with st.spinner("正在智能刷新全部 A 股数据，这可能需要几分钟..."):
-                    # 创建进度条
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
                     # 创建数据源
                     from data_sources import DataSourceManager
                     ds = DataSourceManager()
                     
                     try:
+                        # 获取 Baostock 最新交易日
+                        latest_trading_day = get_latest_trading_day_from_baostock(ds)
+                        if not latest_trading_day:
+                            st.error("无法获取最新交易日信息")
+                            ds.logout()
+                            return
+                        
+                        # 检查是否需要更新
+                        timestamp_manager = st.session_state.timestamp_manager
+                        if not timestamp_manager.needs_update(latest_trading_day):
+                            st.info(f"✓ 本地数据已是最新（{latest_trading_day}），无需更新")
+                            ds.logout()
+                            return
+                        
                         # 执行智能刷新
                         result = st.session_state.data_manager.refresh_all_stocks(ds)
                         
                         if result['success']:
+                            # 更新本地时间戳
+                            timestamp_manager.set_last_update_date(latest_trading_day)
                             st.success(f"✓ 刷新完成！总计：{result['total_stocks']}只 | 缓存：{result['cached_stocks']} | 新增：{result['new_stocks']} | 更新：{result['updated_stocks']}")
                             st.info(f"缓存完整率：{result['cached_stocks']/result['total_stocks']*100:.1f}% - 避免了重复数据请求")
+                            st.info(f"📅 数据已更新至：{latest_trading_day}")
                         else:
                             st.error(f"✗ 刷新失败：{result.get('error', '未知错误')}")
                         
@@ -588,7 +713,7 @@ def render_main_content():
             st.warning(f"⚠️ 权重总和不为 100%，建议点击「归一化权重」")
     
     with col2:
-        if st.button("🚀 开始回测", use_container_width=True, type="primary"):
+        if st.button("🚀 开始回测", width='stretch', type="primary"):
             run_backtest()
     
     # 显示回测结果
@@ -612,46 +737,211 @@ def render_strategy_page():
     
     col1, col2, col3 = st.columns(3)
     
+    # 策略选择和权重调整
+    # 初始化会话状态
+    if 'strategy_weights' not in st.session_state:
+        st.session_state.strategy_weights = {
+            'value_multifactor': 0.4,
+            'momentum_rotation': 0.3,
+            'low_volatility_defensive': 0.3
+        }
+    
+    # 处理策略选择
     with col1:
         st.markdown("#### 💎 稳健价值多因子策略")
         st.info(strategy_info['value_multifactor']['description'])
         use_value = st.checkbox("启用此策略", value=True, key="use_value")
-        if use_value:
-            weight_value = st.slider("策略权重", 0.0, 1.0, 0.4, 0.1, key="weight_value")
-            st.session_state.strategy_weights['value_multifactor'] = weight_value
-    
+
     with col2:
         st.markdown("#### 📈 动量行业轮动策略")
         st.info(strategy_info['momentum_rotation']['description'])
         use_momentum = st.checkbox("启用此策略", value=True, key="use_momentum")
-        if use_momentum:
-            weight_momentum = st.slider("策略权重", 0.0, 1.0, 0.3, 0.1, key="weight_momentum")
-            st.session_state.strategy_weights['momentum_rotation'] = weight_momentum
-    
+
     with col3:
         st.markdown("#### 🛡️ 低波动防御性策略")
         st.info(strategy_info['low_volatility_defensive']['description'])
         use_lowvol = st.checkbox("启用此策略", value=True, key="use_lowvol")
-        if use_lowvol:
-            weight_lowvol = st.slider("策略权重", 0.0, 1.0, 0.3, 0.1, key="weight_lowvol")
-            st.session_state.strategy_weights['low_volatility_defensive'] = weight_lowvol
     
-    # 更新选中的策略列表
-    st.session_state.selected_strategies = []
+    # 确定选中的策略
+    selected_strategies = []
     if use_value:
-        st.session_state.selected_strategies.append('value_multifactor')
+        selected_strategies.append('value_multifactor')
     if use_momentum:
-        st.session_state.selected_strategies.append('momentum_rotation')
+        selected_strategies.append('momentum_rotation')
     if use_lowvol:
-        st.session_state.selected_strategies.append('low_volatility_defensive')
+        selected_strategies.append('low_volatility_defensive')
     
-    # 归一化权重
-    if st.session_state.selected_strategies:
-        total_weight = sum(st.session_state.strategy_weights[k] for k in st.session_state.selected_strategies)
-        if total_weight > 0:
-            for k in st.session_state.selected_strategies:
-                st.session_state.strategy_weights[k] = st.session_state.strategy_weights[k] / total_weight
+    st.session_state.selected_strategies = selected_strategies
     
+    # 所有策略的列表（固定顺序）
+    all_strategies = ['value_multifactor', 'momentum_rotation', 'low_volatility_defensive']
+    strategy_names = {
+        'value_multifactor': '稳健价值',
+        'momentum_rotation': '动量轮动',
+        'low_volatility_defensive': '低波动防御'
+    }
+    
+    # 检测策略变化
+    prev_selected = st.session_state.get('prev_selected_strategies', selected_strategies.copy())
+    newly_enabled = [s for s in selected_strategies if s not in prev_selected]
+    newly_disabled = [s for s in prev_selected if s not in selected_strategies]
+    
+    # 处理权重调整 - 始终显示所有滑块
+    if len(selected_strategies) >= 1:
+        # 获取当前权重值
+        current_weights = {s: st.session_state.strategy_weights[s] for s in all_strategies}
+        
+        # 处理策略变化
+        if newly_disabled or newly_enabled:
+            if len(selected_strategies) == 1:
+                # 问题1：只剩一个策略，强制权重为1并刷新
+                st.session_state.strategy_weights[selected_strategies[0]] = 1.0
+                st.session_state.prev_selected_strategies = selected_strategies.copy()
+                st.session_state.slider_version = st.session_state.get('slider_version', 0) + 1
+                st.rerun()
+            elif len(selected_strategies) == 2 and newly_disabled:
+                # 关闭一个策略（从3个变成2个），归一化剩余两个策略的权重
+                enabled_weights = {s: current_weights[s] for s in selected_strategies}
+                total = sum(enabled_weights.values())
+                if total > 0:
+                    for s in selected_strategies:
+                        st.session_state.strategy_weights[s] = enabled_weights[s] / total
+                st.session_state.prev_selected_strategies = selected_strategies.copy()
+                st.session_state.slider_version = st.session_state.get('slider_version', 0) + 1
+                st.rerun()
+            elif len(selected_strategies) >= 2 and newly_enabled:
+                # 问题2：有新加入的策略，以新策略为主进行归一
+                # 给新策略分配平均权重
+                new_strategy_weight = 1.0 / len(selected_strategies)
+                remaining_weight = 1.0 - new_strategy_weight * len(newly_enabled)
+                
+                # 计算旧策略的总权重
+                old_strategies = [s for s in selected_strategies if s not in newly_enabled]
+                if old_strategies:
+                    old_total = sum(current_weights[s] for s in old_strategies)
+                    if old_total > 0:
+                        # 按比例分配剩余权重给旧策略
+                        for s in old_strategies:
+                            current_weights[s] = (current_weights[s] / old_total) * remaining_weight
+                    else:
+                        # 平均分配
+                        for s in old_strategies:
+                            current_weights[s] = remaining_weight / len(old_strategies)
+                
+                # 设置新策略的权重
+                for s in newly_enabled:
+                    current_weights[s] = new_strategy_weight
+                
+                # 更新权重并刷新
+                st.session_state.strategy_weights = current_weights.copy()
+                st.session_state.prev_selected_strategies = selected_strategies.copy()
+                st.session_state.slider_version = st.session_state.get('slider_version', 0) + 1
+                st.rerun()
+        
+        # 更新prev_selected_strategies
+        st.session_state.prev_selected_strategies = selected_strategies.copy()
+        
+        # 创建三个滑块（始终显示）
+        weight_cols = st.columns(3)
+        new_values = {}
+        
+        for idx, strategy_key in enumerate(all_strategies):
+            with weight_cols[idx]:
+                is_enabled = strategy_key in selected_strategies
+                
+                # 使用当前权重作为滑块值
+                if is_enabled:
+                    # 启用的策略：正常使用滑块
+                    val = st.slider(
+                        f"{strategy_names[strategy_key]}", 
+                        0.0, 1.0, 
+                        current_weights[strategy_key], 
+                        0.05, 
+                        key=f"slider_{strategy_key}_{st.session_state.get('slider_version', 0)}"
+                    )
+                    new_values[strategy_key] = val
+                else:
+                    # 禁用的策略：只显示禁用状态的滑块
+                    st.slider(
+                        f"{strategy_names[strategy_key]}", 
+                        0.0, 1.0, 
+                        current_weights[strategy_key], 
+                        0.05, 
+                        key=f"slider_disabled_{strategy_key}",
+                        disabled=True
+                    )
+                    new_values[strategy_key] = current_weights[strategy_key]
+        
+        # 确保启用的策略权重正确设置
+        if len(selected_strategies) == 1:
+            # 只有一个启用策略时，权重固定为1
+            st.session_state.strategy_weights[selected_strategies[0]] = 1.0
+        elif len(selected_strategies) >= 2:
+            # 检查是否有变化（只在启用的策略中检查）
+            changed = False
+            changed_key = None
+            for s in selected_strategies:
+                if abs(new_values[s] - current_weights[s]) > 0.001:
+                    changed = True
+                    changed_key = s
+                    break
+            
+            if changed and changed_key:
+                # 计算变化量
+                old_val = current_weights[changed_key]
+                new_val = new_values[changed_key]
+                delta = new_val - old_val
+                
+                # 获取其他启用的策略
+                others = [s for s in selected_strategies if s != changed_key]
+                
+                if len(others) > 0:
+                    # 计算其他启用策略的总权重
+                    others_total = sum(current_weights[s] for s in others)
+                    
+                    if others_total > 0:
+                        # 按比例调整其他启用策略
+                        for s in others:
+                            ratio = current_weights[s] / others_total
+                            current_weights[s] = max(0, current_weights[s] - delta * ratio)
+                    else:
+                        # 如果其他启用策略权重为0，平均分配
+                        for s in others:
+                            current_weights[s] = max(0, -delta / len(others))
+                
+                # 更新被改变的策略
+                current_weights[changed_key] = new_val
+                
+                # 归一化（只对启用的策略）
+                enabled_total = sum(current_weights[s] for s in selected_strategies)
+                if enabled_total > 0:
+                    for s in selected_strategies:
+                        st.session_state.strategy_weights[s] = current_weights[s] / enabled_total
+                
+                # 增加版本号强制刷新
+                st.session_state.slider_version = st.session_state.get('slider_version', 0) + 1
+                st.rerun()
+            else:
+                # 没有变化，只更新启用策略的权重
+                enabled_total = sum(new_values[s] for s in selected_strategies)
+                if enabled_total > 0:
+                    for s in selected_strategies:
+                        st.session_state.strategy_weights[s] = new_values[s] / enabled_total
+        
+        # 显示归一化后的权重
+        st.markdown("**归一化后权重：**")
+        display_cols = st.columns(3)
+        for idx, strategy_key in enumerate(all_strategies):
+            with display_cols[idx]:
+                is_enabled = strategy_key in selected_strategies
+                weight = st.session_state.strategy_weights[strategy_key]
+                color = "auto" if is_enabled else "#888"
+                status = "" if is_enabled else " (未启用)"
+                st.markdown(f"<span style='color: {color};'>**{strategy_names[strategy_key]}**{status}<br>{weight*100:.1f}%</span>", unsafe_allow_html=True)
+        
+    else:
+        st.warning("请至少选择一个策略")
+
     # 策略参数调整（可折叠）
     with st.expander("⚙️ 高级参数设置"):
         st.markdown("#### 稳健价值多因子策略参数")
@@ -699,6 +989,17 @@ def render_strategy_page():
             'max_stocks': max_stocks_lowvol,
             'max_stock_weight': max_stock_weight
         }
+    
+    # 执行策略选股按钮和停止按钮
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("🎯 执行策略选股", width='stretch', type="primary"):
+            st.session_state.stop_strategy_selection = False
+            # 执行智能选股流程：先检查时间戳，再决定是否更新数据
+            run_smart_strategy_selection()
+    with col2:
+        if st.button("🛑 停止选股", width='stretch', type="secondary"):
+            st.session_state.stop_strategy_selection = True
     
     # 回测配置
     st.markdown("---")
@@ -760,17 +1061,11 @@ def render_strategy_page():
         )
         st.session_state.commission_rate = commission_rate
     
-    # 执行选股和回测按钮
+    # 执行回测按钮
+    if st.button("🚀 执行回测", width='stretch', type="primary"):
+        run_strategy_backtest()
+    
     st.markdown("---")
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        if st.button("🎯 执行策略选股", use_container_width=True, type="primary"):
-            run_strategy_selection()
-    
-    with col2:
-        if st.button("🚀 执行回测", use_container_width=True, type="secondary"):
-            run_strategy_backtest()
     
     # 显示选股结果
     if st.session_state.strategy_results is not None:
@@ -784,7 +1079,7 @@ def render_strategy_page():
     
     with col1:
         strategy_name = st.text_input("策略组合名称", placeholder="输入名称保存当前配置")
-        if st.button("💾 保存策略组合", use_container_width=True):
+        if st.button("💾 保存策略组合", width='stretch'):
             if strategy_name:
                 save_strategy_combination(strategy_name)
             else:
@@ -794,14 +1089,87 @@ def render_strategy_page():
         saved_strategy_names = [s['name'] for s in st.session_state.saved_strategies]
         if saved_strategy_names:
             selected_saved = st.selectbox("已保存的策略组合", saved_strategy_names)
-            if st.button("📂 加载策略组合", use_container_width=True):
+            if st.button("📂 加载策略组合", width='stretch'):
                 load_strategy_combination(selected_saved)
         else:
             st.info("暂无保存的策略组合")
 
 
+def run_smart_strategy_selection():
+    """
+    执行智能策略选股流程
+    
+    流程：
+    1. 获取本地存储的时间戳
+    2. 获取 Baostock 最新交易日
+    3. 比对时间戳：
+       - 若一致，直接执行选股
+       - 若不一致，先执行数据更新，再执行选股
+    """
+    if not st.session_state.selected_strategies:
+        st.error("请至少选择一个策略")
+        return
+    
+    # 创建数据源
+    ds = DataSourceManager()
+    
+    try:
+        # 获取 Baostock 最新交易日
+        latest_trading_day = get_latest_trading_day_from_baostock(ds)
+        if not latest_trading_day:
+            st.error("无法获取最新交易日信息")
+            ds.logout()
+            return
+        
+        # 获取时间戳管理器
+        timestamp_manager = st.session_state.timestamp_manager
+        last_update_date = timestamp_manager.get_last_update_date()
+        
+        # 显示当前数据状态
+        if last_update_date:
+            st.info(f"📅 本地数据日期：{last_update_date} | Baostock最新交易日：{latest_trading_day}")
+        else:
+            st.info(f"📅 本地无数据记录 | Baostock最新交易日：{latest_trading_day}")
+        
+        # 判断是否需要更新数据
+        if timestamp_manager.needs_update(latest_trading_day):
+            # 需要更新数据
+            st.warning(f"🔄 数据需要更新（{last_update_date or '无'} -> {latest_trading_day}）")
+            
+            with st.spinner("正在更新数据..."):
+                # 执行智能刷新
+                result = st.session_state.data_manager.refresh_all_stocks(ds)
+                
+                if result['success']:
+                    # 更新本地时间戳
+                    timestamp_manager.set_last_update_date(latest_trading_day)
+                    # 清除股票数据缓存，确保下次加载最新数据
+                    st.session_state.stock_data_cache = {}
+                    st.session_state.cache_timestamp = None
+                    st.success(f"✓ 数据更新完成！总计：{result['total_stocks']}只")
+                    st.info("🗑️ 缓存已清除，下次选股将加载最新数据")
+                else:
+                    st.error(f"✗ 数据更新失败：{result.get('error', '未知错误')}")
+                    ds.logout()
+                    return
+        else:
+            # 数据已是最新，直接选股
+            st.success(f"✓ 本地数据已是最新（{latest_trading_day}），直接执行选股")
+        
+        # 执行选股（无论是否更新，都使用最新的本地数据）
+        ds.logout()
+        run_strategy_selection()
+        
+    except Exception as e:
+        st.error(f"❌ 智能选股流程失败：{e}")
+        import traceback
+        st.code(traceback.format_exc())
+    finally:
+        ds.logout()
+
+
 def run_strategy_selection():
-    """执行策略选股（本地数据优先）"""
+    """执行策略选股（简化版，使用缓存机制）"""
     if not st.session_state.selected_strategies:
         st.error("请至少选择一个策略")
         return
@@ -809,137 +1177,76 @@ def run_strategy_selection():
     with st.spinner("正在执行策略选股，请稍候..."):
         try:
             dm = st.session_state.data_manager
-            ds = None
-            
-            st.info("📂 正在扫描本地数据...")
-            
-            local_stocks = []
-            local_data_dir = Path("data/daily") if dm.use_new_storage else Path("cache")
-            
-            if dm.use_new_storage and local_data_dir.exists():
-                for parquet_file in local_data_dir.glob("*.parquet"):
-                    code = parquet_file.stem
-                    local_stocks.append(code)
-            
-            if not local_stocks:
-                st.warning("⚠️ 本地无数据，需要从网络获取股票池")
-                ds = DataSourceManager()
-                stock_pool = ds.get_all_a_stock_codes()
-                
-                if stock_pool is None or stock_pool.empty:
-                    st.error("获取股票池失败")
-                    if ds:
-                        ds.logout()
-                    return
-                
-                local_stocks = [row['code'] for _, row in stock_pool.iterrows()]
-                st.info(f"📊 从网络获取到 {len(local_stocks)} 只股票")
-            else:
-                st.info(f"📊 本地已有 {len(local_stocks)} 只股票数据")
             
             start_date = st.session_state.start_date
             end_date = st.session_state.end_date
             
-            st.info(f"📅 回测日期范围：{start_date} ~ {end_date}")
+            # 生成缓存键，包含日期范围
+            cache_key = f"{start_date}_{end_date}"
             
-            data_dict = {}
-            need_update_stocks = []
-            local_valid_count = 0
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            MIN_DATA_DAYS = 63
-            MAX_DATA_AGE_DAYS = 7
-            
-            from datetime import datetime as dt
-            
-            for i, code in enumerate(local_stocks):
-                status_text.text(f"🔍 检查 {code} 数据完整性 ({i+1}/{len(local_stocks)})")
+            # 检查缓存是否有效
+            if cache_key in st.session_state.stock_data_cache:
+                st.info("📦 使用缓存的股票数据...")
+                data_dict = st.session_state.stock_data_cache[cache_key]
+                local_stocks = list(data_dict.keys())
+                st.info(f"📊 缓存中已有 {len(local_stocks)} 只股票数据")
+                # 创建空的 progress_bar 和 status_text 用于后续流程
+                progress_bar = st.progress(100)
+                status_text = st.empty()
+            else:
+                st.info("📂 正在扫描本地数据...")
                 
-                df_local = dm.get_stock_data(code, start_date, end_date)
+                local_stocks = []
+                local_data_dir = Path("data/daily") if dm.use_new_storage else Path("cache")
                 
-                is_valid = False
-                need_update = False
+                if dm.use_new_storage and local_data_dir.exists():
+                    for parquet_file in local_data_dir.glob("*.parquet"):
+                        code = parquet_file.stem
+                        local_stocks.append(code)
                 
-                if df_local is not None and not df_local.empty:
-                    data_days = len(df_local)
-                    
-                    if data_days >= MIN_DATA_DAYS:
-                        cached_min, cached_max = dm.get_stock_date_range(code)
-                        
-                        if cached_max:
-                            cached_max_date = pd.to_datetime(cached_max)
-                            today = dt.now()
-                            data_age = (today - cached_max_date).days
-                            
-                            if data_age <= MAX_DATA_AGE_DAYS:
-                                is_valid = True
-                                local_valid_count += 1
-                                data_dict[code] = df_local
-                            else:
-                                need_update = True
-                                need_update_stocks.append(code)
-                        else:
-                            is_valid = True
-                            local_valid_count += 1
-                            data_dict[code] = df_local
-                    else:
-                        need_update = True
-                        need_update_stocks.append(code)
-                else:
-                    need_update = True
-                    need_update_stocks.append(code)
+                if not local_stocks:
+                    st.error("⚠️ 本地无数据，请先执行数据刷新")
+                    return
                 
-                progress_bar.progress((i + 1) / len(local_stocks))
-            
-            st.info(f"✅ 本地有效数据：{local_valid_count} 只 | ⚠️ 需要更新：{len(need_update_stocks)} 只")
-            
-            if need_update_stocks:
-                st.warning(f"🔄 有 {len(need_update_stocks)} 只股票数据需要更新")
+                st.info(f"📊 本地已有 {len(local_stocks)} 只股票数据")
                 
-                update_mode = st.radio(
-                    "选择更新方式",
-                    ["跳过更新，仅使用本地数据", "仅更新前50只", "更新全部（耗时较长）"],
-                    index=0,
-                    key="update_mode_radio"
-                )
+                st.info(f"📅 回测日期范围：{start_date} ~ {end_date}")
                 
-                if "跳过更新" in update_mode:
-                    st.info("⏭️ 跳过网络更新，仅使用本地有效数据")
-                else:
-                    update_limit = 50 if "前50只" in update_mode else len(need_update_stocks)
+                data_dict = {}
+                
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                # 直接使用本地数据，不进行完整性检查
+                for i, code in enumerate(local_stocks):
+                    # 检查是否收到停止信号
+                    if st.session_state.stop_strategy_selection:
+                        st.warning("⏹️ 选股任务已停止")
+                        return
                     
-                    if ds is None:
-                        ds = DataSourceManager()
+                    status_text.text(f"📂 加载 {code} 数据 ({i+1}/{len(local_stocks)})")
                     
-                    st.info(f"🌐 正在从网络更新 {min(update_limit, len(need_update_stocks))} 只股票数据...")
+                    df_local = dm.get_stock_data(code, start_date, end_date)
                     
-                    update_progress = st.progress(0)
-                    update_status = st.empty()
-                    updated_count = 0
+                    if df_local is not None and not df_local.empty:
+                        data_dict[code] = df_local
                     
-                    for i, code in enumerate(need_update_stocks[:update_limit]):
-                        update_status.text(f"📥 更新 {code} ({i+1}/{update_limit})")
-                        
-                        try:
-                            df_new = ds.get_stock_data(code, start_date, end_date)
-                            
-                            if df_new is not None and not df_new.empty:
-                                dm.save_stock_data(code, df_new)
-                                data_dict[code] = df_new
-                                updated_count += 1
-                        except Exception as e:
-                            pass
-                        
-                        update_progress.progress((i + 1) / update_limit)
-                    
-                    st.success(f"✅ 成功更新 {updated_count} 只股票数据")
+                    progress_bar.progress((i + 1) / len(local_stocks))
+                
+                st.info(f"✅ 成功加载 {len(data_dict)} 只股票数据")
+                
+                # 更新缓存
+                st.session_state.stock_data_cache[cache_key] = data_dict
+                st.session_state.cache_timestamp = datetime.now().isoformat()
+                st.info("💾 股票数据已缓存，后续选股操作将直接使用缓存")
             
             if not data_dict:
                 st.error("❌ 没有可用的股票数据，请先刷新数据")
-                if ds:
-                    ds.logout()
+                return
+            
+            # 检查是否收到停止信号
+            if st.session_state.stop_strategy_selection:
+                st.warning("⏹️ 选股任务已停止")
                 return
             
             status_text.text("🎯 正在执行策略选股...")
@@ -964,15 +1271,13 @@ def run_strategy_selection():
                 'selected_stocks': selected_stocks,
                 'stock_pool_size': len(local_stocks),
                 'data_acquired': len(data_dict),
-                'local_valid_count': local_valid_count,
-                'updated_count': len(need_update_stocks) if need_update_stocks and "跳过更新" not in update_mode else 0,
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
             
-            st.success(f"🎉 选股完成！从 {len(data_dict)} 只股票中选出 {len(selected_stocks)} 只")
+            # 重置停止标志
+            st.session_state.stop_strategy_selection = False
             
-            if ds:
-                ds.logout()
+            st.success(f"🎉 选股完成！从 {len(data_dict)} 只股票中选出 {len(selected_stocks)} 只")
             
         except Exception as e:
             st.error(f"❌ 策略选股失败：{e}")
@@ -1028,17 +1333,17 @@ def display_strategy_results():
             for s in stocks
         ])
         
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        st.dataframe(df_display, width='stretch', hide_index=True)
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("📥 导出选股结果", use_container_width=True):
+            if st.button("📥 导出选股结果", width='stretch'):
                 df_export = pd.DataFrame(stocks)
                 df_export.to_csv("strategy_selection_results.csv", index=False, encoding='utf-8-sig')
                 st.success("已导出 strategy_selection_results.csv")
         
         with col2:
-            if st.button("📊 查看权重分布", use_container_width=True):
+            if st.button("📊 查看权重分布", width='stretch'):
                 import plotly.express as px
                 
                 fig = px.pie(
@@ -1047,7 +1352,7 @@ def display_strategy_results():
                     names=[s['code'] for s in stocks],
                     title="股票权重分布"
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
 
 def save_strategy_combination(name: str):
@@ -1183,7 +1488,7 @@ def display_results():
         )
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
     # 收益分布图 - 移动端优化：在小屏幕上垂直堆叠
     st.markdown("### 📈 图表分析")
@@ -1216,7 +1521,7 @@ def display_results():
         margin=dict(l=20, r=20, t=20, b=20)
     )
     
-    st.plotly_chart(fig_dd, use_container_width=True)
+    st.plotly_chart(fig_dd, width='stretch')
     
     # 股票权重分布
     st.markdown("#### 📊 股票权重分布")
@@ -1235,7 +1540,7 @@ def display_results():
         margin=dict(l=20, r=20, t=20, b=20)
     )
     
-    st.plotly_chart(fig_pie, use_container_width=True)
+    st.plotly_chart(fig_pie, width='stretch')
     
     # 再平衡日期标记
     st.markdown("### 📅 再平衡日期")
@@ -1244,18 +1549,18 @@ def display_results():
             '序号': range(1, len(results['rebalance_dates']) + 1),
             '日期': [d.strftime('%Y-%m-%d') for d in results['rebalance_dates']]
         })
-        st.dataframe(rebalance_df, use_container_width=True, hide_index=True)
+        st.dataframe(rebalance_df, width='stretch', hide_index=True)
     
     # 导出数据按钮 - 移动端优化
     st.markdown("### 📥 导出数据")
     cols = st.columns(2)
     with cols[0]:
-        if st.button("📥 导出净值数据", use_container_width=True):
+        if st.button("📥 导出净值数据", width='stretch'):
             portfolio_values.to_csv("portfolio_values.csv", index=False, encoding='utf-8-sig')
             st.success("已导出 portfolio_values.csv")
     
     with cols[1]:
-        if st.button("📥 导出指标数据", use_container_width=True):
+        if st.button("📥 导出指标数据", width='stretch'):
             metrics_df = pd.DataFrame({
                 '指标': list(metrics.keys()),
                 '数值': list(metrics.values())
