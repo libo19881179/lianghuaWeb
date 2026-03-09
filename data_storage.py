@@ -221,6 +221,9 @@ class EnhancedDataStorage:
             'limit_status': 'int8',  # 0-正常，1-涨停，-1-跌停
             'trade_status': 'int8',  # 0-交易，1-停牌
             
+            # 复权标志
+            'adjustflag': 'int8',  # 复权标志：1-前复权，2-后复权，3-不复权
+            
             # 其他
             'high_limit': 'float64',  # 涨停价
             'low_limit': 'float64',  # 跌停价
@@ -228,7 +231,7 @@ class EnhancedDataStorage:
             'turnover_rate': 'float64',  # 换手率（百分比）
         }
         
-        # 添加缺失的列并设置默认值
+        # 添加缺失的列并设置默认值，同时确保现有列的类型正确
         for col, dtype in standard_columns.items():
             if col not in df.columns:
                 if col == 'date':
@@ -241,6 +244,14 @@ class EnhancedDataStorage:
                     df[col] = 0.0
                 elif dtype.startswith('int'):
                     df[col] = 0
+            else:
+                # 确保现有列的类型正确
+                if col == 'date':
+                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                elif dtype.startswith('float'):
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                elif dtype.startswith('int'):
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
         
         # 确保股票代码和名称有值
         if 'code' in df.columns:

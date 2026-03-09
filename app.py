@@ -1251,7 +1251,38 @@ def run_strategy_selection():
             
             status_text.text("🎯 正在执行策略选股...")
             
-            stock_list = [{'code': code, 'name': ''} for code in data_dict.keys()]
+            # 从 Baostock 获取完整的股票列表，包含股票名称
+            stock_list = []
+            try:
+                from data_sources import DataSourceManager
+                ds = DataSourceManager()
+                # 获取完整的股票列表
+                all_stocks_df = ds.get_all_a_stock_codes()
+                
+                # 创建股票代码到名称的映射
+                stock_name_map = {}
+                if all_stocks_df is not None:
+                    for _, row in all_stocks_df.iterrows():
+                        if 'code' in row and 'name' in row:
+                            stock_name_map[row['code']] = row['name']
+                
+                # 构建股票列表
+                for code in data_dict.keys():
+                    name = stock_name_map.get(code, '')
+                    stock_list.append({'code': code, 'name': name})
+                
+                ds.logout()
+            except Exception as e:
+                logger.warning(f"获取股票名称失败：{e}")
+                # 回退方案：从数据中提取股票名称
+                for code in data_dict.keys():
+                    df = data_dict[code]
+                    name = ''
+                    if 'name' in df.columns and not df['name'].empty:
+                        name_values = df['name'].dropna().unique()
+                        if len(name_values) > 0:
+                            name = name_values[0]
+                    stock_list.append({'code': code, 'name': name})
             
             for strategy_key, params in st.session_state.strategy_params.items():
                 st.session_state.strategy_combiner.update_strategy_params(strategy_key, params)

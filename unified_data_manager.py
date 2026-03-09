@@ -383,6 +383,9 @@ class UnifiedDataManager:
                         stock_name = stock_names.get(stock_code, '')
                         self.save_stock_data(stock_code, df, stock_name=stock_name)
                         new_count += 1
+                    elif df is None:
+                        # 空数据（可能是停牌或无数据），不视为失败
+                        print(f"[{i+1}/{len(stock_codes)}] {stock_code} - 无数据（可能是停牌）")
                     else:
                         failed_count += 1
                 else:
@@ -413,6 +416,9 @@ class UnifiedDataManager:
                                 stock_name = stock_names.get(stock_code, '')
                                 self.save_stock_data(stock_code, df_new, stock_name=stock_name)
                                 updated_count += 1
+                        elif df_new is None:
+                            # 空数据（可能是停牌或无数据），不视为失败
+                            print(f"[{i+1}/{len(stock_codes)}] {stock_code} - 无数据（可能是停牌）")
                         else:
                             failed_count += 1
                 

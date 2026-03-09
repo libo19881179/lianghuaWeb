@@ -154,8 +154,11 @@ class DataSourceManager:
             df = self._get_from_baostock(stock_code, start_date, end_date)
             if df is not None and not df.empty:
                 return df
+            elif df is None:
+                # _get_from_baostock 已经记录了日志，这里不需要重复记录
+                return None
         
-        logger.error("Baostock 获取数据失败")
+        logger.error("Baostock 获取数据失败：未登录或网络错误")
         return None
     
     def _get_baostock_data(
@@ -399,7 +402,9 @@ class DataSourceManager:
                         standardized_df['code'] = standardized_df['code'].apply(format_code)
                         
                         # 提取股票名称
-                        if 'stockName' in standardized_df.columns:
+                        if 'code_name' in standardized_df.columns:
+                            standardized_df['name'] = standardized_df['code_name']
+                        elif 'stockName' in standardized_df.columns:
                             standardized_df['name'] = standardized_df['stockName']
                         elif 'name' in standardized_df.columns:
                             standardized_df['name'] = standardized_df['name']
