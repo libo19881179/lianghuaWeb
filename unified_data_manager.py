@@ -375,6 +375,28 @@ class UnifiedDataManager:
                 # 检查缓存
                 cached_min, cached_max = self.get_stock_date_range(stock_code)
                 
+                # 如果缓存中没有，检查是否有格式不同但实际相同的股票代码
+                if cached_min is None:
+                    # 尝试标准化股票代码格式
+                    def standardize_code(code):
+                        if isinstance(code, str) and '.' in code:
+                            num = code.split('.')[-1]
+                            if num.startswith('6'):
+                                return f"sh.{num}"
+                            else:
+                                return f"sz.{num}"
+                        return code
+                    
+                    # 检查是否存在格式不同的同一只股票
+                    standardized_code = standardize_code(stock_code)
+                    if standardized_code != stock_code:
+                        alt_min, alt_max = self.get_stock_date_range(standardized_code)
+                        if alt_min is not None:
+                            # 存在格式不同的缓存，使用现有数据
+                            print(f"[{i+1}/{len(stock_codes)}] {stock_code} - 使用现有缓存数据（格式标准化）")
+                            cached_count += 1
+                            continue
+                
                 if cached_min is None:
                     # 缓存中没有，需要获取全部数据
                     print(f"[{i+1}/{len(stock_codes)}] {stock_code} - 从网络获取全部数据")

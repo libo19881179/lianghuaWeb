@@ -391,11 +391,16 @@ class DataSourceManager:
                         # 标准化股票代码格式
                         def format_code(code):
                             if isinstance(code, str):
-                                if not code.startswith('sh.') and not code.startswith('sz.'):
-                                    if code.startswith('6'):
-                                        return f"sh.{code}"
-                                    else:
-                                        return f"sz.{code}"
+                                # 提取数字部分
+                                if '.' in code:
+                                    code_number = code.split('.')[-1]
+                                else:
+                                    code_number = code
+                                # 根据数字部分确定市场
+                                if code_number.startswith('6'):
+                                    return f"sh.{code_number}"
+                                else:
+                                    return f"sz.{code_number}"
                             return code
                         
                         # 使用向量化操作
