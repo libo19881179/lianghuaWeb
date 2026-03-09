@@ -28,12 +28,16 @@ def update_all_stocks():
     """执行全市场股票数据更新"""
     logger.info("=== 开始自动更新股票数据 ===")
     
+    ds = None
     try:
+        # 初始化数据源
+        ds = DataSourceManager()
+        
         # 初始化数据管理器
         dm = UnifiedDataManager()
         
         # 执行全市场更新
-        result = dm.refresh_all_stocks()
+        result = dm.refresh_all_stocks(ds)
         
         logger.info(f"更新完成：")
         logger.info(f"总股票数：{result['total_stocks']}")
@@ -46,6 +50,13 @@ def update_all_stocks():
         logger.error(f"更新过程中发生错误：{e}")
         import traceback
         logger.error(traceback.format_exc())
+    finally:
+        # 确保登出
+        if ds is not None:
+            try:
+                ds.logout()
+            except Exception as e:
+                logger.warning(f"登出失败：{e}")
     
     logger.info("=== 自动更新完成 ===")
 

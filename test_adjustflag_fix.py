@@ -63,5 +63,8 @@ else:
     print("   ✗ 数据获取失败")
 
 # 退出登录
-ds.logout()
+try:
+    ds.logout()
+except Exception as e:
+    print(f"   ⚠ 登出失败：{e}")
 print("6. 测试完成，已退出登录")

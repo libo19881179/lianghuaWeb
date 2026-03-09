@@ -256,6 +256,7 @@ def render_sidebar():
                 result = {'success': False, 'message': '', 'error': None}
                 
                 def verify_connection():
+                    ds = None
                     try:
                         ds = DataSourceManager()
                         
@@ -266,12 +267,17 @@ def render_sidebar():
                             else:
                                 result['success'] = False
                                 result['message'] = "✗ Baostock 连接失败"
-                        
-                        ds.logout()
                     except Exception as e:
                         result['success'] = False
                         result['message'] = "验证失败"
                         result['error'] = str(e)
+                    finally:
+                        # 确保无论是否发生异常，都会执行 logout 操作
+                        if ds is not None:
+                            try:
+                                ds.logout()
+                            except Exception as e:
+                                pass
                 
                 # 启动验证线程
                 with st.spinner("正在验证..."):
@@ -362,6 +368,7 @@ def render_sidebar():
                             
                             if should_fetch:
                                 with st.spinner("正在获取股票信息..."):
+                                    ds = None
                                     try:
                                         from data_sources import DataSourceManager
                                         
@@ -377,10 +384,15 @@ def render_sidebar():
                                             st.rerun()
                                         else:
                                             st.warning("⚠ 未找到股票信息")
-                                        
-                                        ds.logout()
                                     except Exception as e:
                                         st.warning(f"⚠ 获取失败：{str(e)[:50]}")
+                                    finally:
+                                        # 确保无论是否发生异常，都会执行 logout 操作
+                                        if ds is not None:
+                                            try:
+                                                ds.logout()
+                                            except Exception as e:
+                                                pass
                                         st.session_state[last_checked_key] = ""
                         
                         edit_weight = st.number_input(
@@ -493,6 +505,7 @@ def render_sidebar():
             should_fetch = not new_name or new_name.strip() == ""
             
             if should_fetch:
+                ds = None
                 try:
                     from data_sources import DataSourceManager
                     
@@ -510,11 +523,16 @@ def render_sidebar():
                         st.rerun()
                     else:
                         st.warning("⚠ 未找到股票信息，请手动输入名称")
-                    
-                    ds.logout()
                 except Exception as e:
                     st.warning(f"⚠ 获取失败：{str(e)[:50]}，请手动输入名称")
                     # 重置 last_checked_code，允许重试
+                finally:
+                    # 确保无论是否发生异常，都会执行 logout 操作
+                    if ds is not None:
+                        try:
+                            ds.logout()
+                        except Exception as e:
+                            pass
                     st.session_state.last_checked_code = ""
         
         new_weight = st.number_input("权重 (0-1)", min_value=0.0, max_value=1.0, value=0.1, step=0.05, key="new_stock_weight")
@@ -592,14 +610,12 @@ def render_sidebar():
                         latest_trading_day = get_latest_trading_day_from_baostock(ds)
                         if not latest_trading_day:
                             st.error("无法获取最新交易日信息")
-                            ds.logout()
                             return
                         
                         # 检查是否需要更新
                         timestamp_manager = st.session_state.timestamp_manager
                         if not timestamp_manager.needs_update(latest_trading_day):
                             st.info(f"✓ 本地数据已是最新（{latest_trading_day}），无需更新")
-                            ds.logout()
                             return
                         
                         # 执行智能刷新
@@ -613,14 +629,16 @@ def render_sidebar():
                             st.info(f"📅 数据已更新至：{latest_trading_day}")
                         else:
                             st.error(f"✗ 刷新失败：{result.get('error', '未知错误')}")
-                        
-                        ds.logout()
                     except Exception as e:
                         st.error(f"刷新出错：{e}")
                         import traceback
                         st.code(traceback.format_exc())
                     finally:
-                        ds.logout()
+                        # 确保无论是否发生异常，都会执行 logout 操作
+                        try:
+                            ds.logout()
+                        except Exception as e:
+                            pass
 
 
 def render_main_content():
@@ -1253,6 +1271,7 @@ def run_strategy_selection():
             
             # 从 Baostock 获取完整的股票列表，包含股票名称
             stock_list = []
+            ds = None
             try:
                 from data_sources import DataSourceManager
                 ds = DataSourceManager()
@@ -1270,8 +1289,6 @@ def run_strategy_selection():
                 for code in data_dict.keys():
                     name = stock_name_map.get(code, '')
                     stock_list.append({'code': code, 'name': name})
-                
-                ds.logout()
             except Exception as e:
                 logger.warning(f"获取股票名称失败：{e}")
                 # 回退方案：从数据中提取股票名称
@@ -1283,6 +1300,13 @@ def run_strategy_selection():
                         if len(name_values) > 0:
                             name = name_values[0]
                     stock_list.append({'code': code, 'name': name})
+            finally:
+                # 确保无论是否发生异常，都会执行 logout 操作
+                if ds is not None:
+                    try:
+                        ds.logout()
+                    except Exception as e:
+                        logger.warning(f"登出 Baostock 失败：{e}")
             
             for strategy_key, params in st.session_state.strategy_params.items():
                 st.session_state.strategy_combiner.update_strategy_params(strategy_key, params)

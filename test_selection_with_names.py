@@ -37,6 +37,7 @@ print(f"\n加载测试数据: {len(data_dict)} 只股票")
 
 # 从 Baostock 获取股票名称
 stock_name_map = {}
+ds = None
 try:
     ds = DataSourceManager()
     all_stocks_df = ds.get_all_a_stock_codes()
@@ -45,10 +46,15 @@ try:
         for _, row in all_stocks_df.iterrows():
             if 'code' in row and 'name' in row:
                 stock_name_map[row['code']] = row['name']
-    
-    ds.logout()
 except Exception as e:
     logger.warning(f"获取股票名称失败：{e}")
+finally:
+    # 确保无论是否发生异常，都会执行 logout 操作
+    if ds is not None:
+        try:
+            ds.logout()
+        except Exception as e:
+            logger.warning(f"登出 Baostock 失败：{e}")
 
 # 构建股票列表
 stock_list = []

@@ -86,7 +86,7 @@ else:
 
 # 测试加载最终数据
 print("8. 测试加载最终数据...")
-final_df = dm.get_stock_data(TEST_STOCK)
+final_df = dm.get_stock_data(TEST_STOCK, TEST_START_DATE1, TEST_END_DATE2)
 if final_df is not None and not final_df.empty:
     print(f"   ✓ 数据加载成功，共 {len(final_df)} 条记录")
     print(f"   ✓ 最终数据 adjustflag 类型: {final_df['adjustflag'].dtype}")
@@ -95,5 +95,8 @@ else:
     print("   ✗ 数据加载失败")
 
 # 退出登录
-ds.logout()
+try:
+    ds.logout()
+except Exception as e:
+    print(f"   ⚠ 登出失败：{e}")
 print("9. 测试完成，已退出登录")
